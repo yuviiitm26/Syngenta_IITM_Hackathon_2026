@@ -3,8 +3,9 @@ import {
   User, WifiOff, AlertTriangle, MapPin, 
   Target, Bug, PackageMinus, Sparkles, Quote, 
   CheckCircle, AlertCircle, LayoutDashboard, Settings, RefreshCcw,
-  Send, Bot, MessageSquare, X
+  Send, Bot, MessageSquare, X, LogOut
 } from 'lucide-react';
+import Login from './Login';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'https://syngenta-iitm-hackathon-2026-1.onrender.com';
 
@@ -15,6 +16,9 @@ const getUrgencyColors = (urgency) => {
 };
 
 export default function FieldCoPilot() {
+  const [token, setToken] = useState(localStorage.getItem('token'));
+  const [user, setUser] = useState(JSON.parse(localStorage.getItem('user')));
+  
   const [visitsData, setVisitsData] = useState([]);
   const [activeVisit, setActiveVisit] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -32,6 +36,31 @@ export default function FieldCoPilot() {
   const [chatLoading, setChatLoading] = useState(false);
   const chatEndRef = useRef(null);
 
+  const handleLogin = (newToken, newUser) => {
+    localStorage.setItem('token', newToken);
+    localStorage.setItem('user', JSON.stringify(newUser));
+    setToken(newToken);
+    setUser(newUser);
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+    setToken(null);
+    setUser(null);
+  };
+
+  // Helper for authorized fetches
+  const authFetch = (url, options = {}) => {
+    return fetch(url, {
+      ...options,
+      headers: {
+        ...options.headers,
+        'Authorization': `Bearer ${token}`
+      }
+    });
+  };
+
   // Auto-scroll chat
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -39,22 +68,26 @@ export default function FieldCoPilot() {
 
   // Fetch Available Locations (Districts) on Mount
   useEffect(() => {
+    if (!token) return;
     const fetchLocations = async () => {
       try {
-        const response = await fetch(`${API_BASE_URL}/api/locations`);
+        const response = await authFetch(`${API_BASE_URL}/api/locations`);
         if (response.ok) {
           const data = await response.json();
           setAvailableLocations(['All Locations', ...data]);
+        } else if (response.status === 401) {
+          handleLogout();
         }
       } catch (err) {
         console.error("Failed to fetch locations", err);
       }
     };
     fetchLocations();
-  }, []);
+  }, [token]);
 
   // Fetch Available Tehsils when District changes
   useEffect(() => {
+    if (!token) return;
     const fetchTehsils = async () => {
       if (selectedLocation === 'All Locations') {
         setAvailableTehsils(['All Tehsils']);
@@ -63,21 +96,24 @@ export default function FieldCoPilot() {
       }
       
       try {
-        const response = await fetch(`${API_BASE_URL}/api/tehsils?district=${selectedLocation}`);
+        const response = await authFetch(`${API_BASE_URL}/api/tehsils?district=${selectedLocation}`);
         if (response.ok) {
           const data = await response.json();
           setAvailableTehsils(['All Tehsils', ...data]);
           setSelectedTehsil('All Tehsils');
+        } else if (response.status === 401) {
+          handleLogout();
         }
       } catch (err) {
         console.error("Failed to fetch tehsils", err);
       }
     };
     fetchTehsils();
-  }, [selectedLocation]);
+  }, [selectedLocation, token]);
 
   // Fetch Dashboard Data whenever selectedLocation or selectedTehsil changes
   useEffect(() => {
+    if (!token) return;
     const fetchData = async () => {
       setLoading(true);
       try {
@@ -94,7 +130,11 @@ export default function FieldCoPilot() {
         const queryString = params.toString();
         if (queryString) url += `?${queryString}`;
           
-        const response = await fetch(url);
+        const response = await authFetch(url);
+        if (response.status === 401) {
+          handleLogout();
+          return;
+        }
         if (!response.ok) {
           throw new Error('Network response was not ok');
         }
@@ -115,11 +155,11 @@ export default function FieldCoPilot() {
     };
 
     fetchData();
-  }, [selectedLocation, selectedTehsil]);
+  }, [selectedLocation, selectedTehsil, token]);
 
   const handleSendMessage = async (e) => {
     e.preventDefault();
-    if (!userInput.trim() || !activeVisit) return;
+    if (!userInput.trim() || !activeVisit || !token) return;
 
     const newMessage = { role: 'user', text: userInput };
     setChatMessages(prev => [...prev, newMessage]);
@@ -127,7 +167,7 @@ export default function FieldCoPilot() {
     setChatLoading(true);
 
     try {
-      const response = await fetch(`${API_BASE_URL}/api/chat`, {
+      const response = await authFetch(`${API_BASE_URL}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -136,6 +176,11 @@ export default function FieldCoPilot() {
         })
       });
       
+      if (response.status === 401) {
+        handleLogout();
+        return;
+      }
+
       const data = await response.json();
       setChatMessages(prev => [...prev, { role: 'assistant', text: data.reply }]);
     } catch (err) {
@@ -144,6 +189,10 @@ export default function FieldCoPilot() {
       setChatLoading(false);
     }
   };
+
+  if (!token) {
+    return <Login onLogin={handleLogin} API_BASE_URL={API_BASE_URL} />;
+  }
 
   if (loading && visitsData.length === 0) {
     return (
@@ -162,13 +211,21 @@ export default function FieldCoPilot() {
         <div className="bg-white p-8 rounded-2xl shadow-xl border border-rose-100 text-center max-w-md">
           <WifiOff className="w-16 h-16 text-rose-500 mx-auto mb-4" />
           <h2 className="text-2xl font-bold text-slate-900 mb-2">Connection Failed</h2>
-          <p className="text-slate-600 mb-6">Unable to reach the backend server. Please ensure the FastAPI server is running on port 10000.</p>
-          <button 
-            onClick={() => window.location.reload()}
-            className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3 px-6 rounded-lg transition"
-          >
-            Retry Connection
-          </button>
+          <p className="text-slate-600 mb-6">Unable to reach the backend server. Please ensure the FastAPI server is running.</p>
+          <div className="flex space-x-3">
+            <button 
+              onClick={() => window.location.reload()}
+              className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3 px-6 rounded-lg transition"
+            >
+              Retry
+            </button>
+            <button 
+              onClick={handleLogout}
+              className="flex-1 bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold py-3 px-6 rounded-lg transition"
+            >
+              Logout
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -188,9 +245,18 @@ export default function FieldCoPilot() {
             <LayoutDashboard className="w-6 h-6 text-emerald-300" />
             <h1 className="font-bold text-xl tracking-wide">Syngenta Co-Pilot</h1>
           </div>
-          <div className="flex space-x-4">
-            <Settings className="w-5 h-5 text-emerald-300 cursor-pointer hover:text-white transition" />
-            <User className="w-5 h-5 text-emerald-300 cursor-pointer hover:text-white transition" />
+          <div className="flex items-center space-x-3">
+            <div className="text-right hidden sm:block">
+              <p className="text-xs font-bold text-emerald-200 leading-none">{user?.full_name}</p>
+              <p className="text-[10px] text-emerald-400 uppercase tracking-tighter">{user?.role}</p>
+            </div>
+            <button 
+              onClick={handleLogout}
+              className="p-2 hover:bg-emerald-700 rounded-lg transition text-emerald-300 hover:text-white"
+              title="Logout"
+            >
+              <LogOut className="w-5 h-5" />
+            </button>
           </div>
         </div>
 

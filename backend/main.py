@@ -1,16 +1,23 @@
-from email.policy import strict
-
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import OAuth2PasswordRequestForm
 import sqlite3
 import requests
 import json
 import joblib
 import numpy as np
 import time
+from datetime import timedelta
 
 import os
 import google.generativeai as genai
+from auth import (
+    authenticate_user, 
+    create_access_token, 
+    get_current_user, 
+    ACCESS_TOKEN_EXPIRE_MINUTES
+)
+from database import get_db_connection, init_db
 
 # --- 1. CONFIGURATION & ENV LOADING ---
 # If python-dotenv is not installed, we load the .env file manually
@@ -44,9 +51,10 @@ except FileNotFoundError:
 
 app = FastAPI(title="Syngenta Enterprise API")
 
-@app.get("/")
-def read_root():
-    return {"status": "online", "message": "Syngenta Co-Pilot API is live and healthy."}
+# Initialize Database on startup
+@app.on_event("startup")
+async def startup_event():
+    init_db()
 
 # Configure CORS
 frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173")
@@ -60,12 +68,38 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-def get_db_connection():
-    conn = sqlite3.connect("syngenta_prod.db")
-    conn.row_factory = sqlite3.Row
-    return conn
+# --- AUTH ENDPOINTS ---
 
-# --- 2. GEOLOCATION HELPER ---
+@app.post("/api/login")
+async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
+    user = authenticate_user(form_data.username, form_data.password)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user["username"]}, expires_delta=access_token_expires
+    )
+    return {"access_token": access_token, "token_type": "bearer", "user": {
+        "username": user["username"],
+        "full_name": user["full_name"],
+        "role": user["role"],
+        "rep_id": user["rep_id"]
+    }}
+
+@app.get("/api/me")
+async def read_users_me(current_user: dict = Depends(get_current_user)):
+    return {
+        "username": current_user["username"],
+        "full_name": current_user["full_name"],
+        "role": current_user["role"],
+        "rep_id": current_user["rep_id"]
+    }
+
+# --- GEOLOCATION HELPER ---
 def get_coordinates(district_name):
     """Converts district names from the database into Lat/Lon for Open-Meteo"""
     coords = {
@@ -77,7 +111,7 @@ def get_coordinates(district_name):
     }
     return coords.get(district_name, (18.5204, 73.8567)) # Default to Pune
 
-# --- 3. THE ML INFERENCE ENGINE ---
+# --- THE ML INFERENCE ENGINE ---
 def analyze_future_threat(lat, lon, current_inventory):
     """Tries Live API -> Falls back to Mock Data -> Caches by Lat/Lon"""
     
@@ -147,35 +181,9 @@ def analyze_future_threat(lat, lon, current_inventory):
         }
     }
 
-    
-
-def generate_pitch_script(retailer_name, risk_score, product, inventory, local_growers="Rajesh (Wheat, 5 acres), Amit (Wheat, 12 acres)"):
-    """Uses GenAI to generate a B2B sales pitch AND a B2C Grower WhatsApp template"""
-    
-    if risk_score < 40:
-        return f"Inventory looks stable at {inventory} units. No immediate action required."
-
-    prompt = f"""
-    You are an expert Syngenta agronomy sales assistant. 
-    Our ML model predicts a {risk_score}% chance of a severe fungal outbreak next week at {retailer_name}.
-    They only have {inventory} units of {product} left.
-    
-    Task 1 (The Push): Write a short 2-sentence sales pitch for our rep to convince the retailer to restock {product}.
-    
-    Task 2 (The Pull): We know local growers {local_growers} buy from this retailer. Write a 2-sentence WhatsApp message (with emojis) that the retailer can forward to these farmers to warn them about the weather and tell them to come buy {product} today.
-    
-    Format the output cleanly with 'REP PITCH:' and 'WHATSAPP FOR GROWERS:'
-    """
-    
-    try:
-        response = llm_model.generate_content(prompt)
-        return response.text.strip()
-    except Exception as e:
-        return "System alert: High disease risk. Recommend restocking immediately."
-    
-# --- 4. PRODUCTION DATA FUSION ENDPOINT ---
+# --- PRODUCTION DATA FUSION ENDPOINT ---
 @app.get("/api/locations")
-def get_locations():
+def get_locations(current_user: dict = Depends(get_current_user)):
     """Returns a unique list of districts from both retailers and growers for the frontend filter"""
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -189,7 +197,7 @@ def get_locations():
     return sorted(districts)
 
 @app.get("/api/tehsils")
-def get_tehsils(district: str):
+def get_tehsils(district: str, current_user: dict = Depends(get_current_user)):
     """Returns unique list of tehsils for a specific district from both retailers and growers"""
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -203,22 +211,30 @@ def get_tehsils(district: str):
     return sorted(tehsils)
 
 @app.get("/api/routes")
-def get_dashboard_data(district: str = None, tehsil: str = None):
+def get_dashboard_data(district: str = None, tehsil: str = None, current_user: dict = Depends(get_current_user)):
     """Queries data warehouse, groups data, and runs ML inference for retailers and growers"""
     conn = get_db_connection()
     cursor = conn.cursor()
     
+    # Filter by rep_id if user is not admin
+    rep_filter = ""
+    params = []
+    if current_user["role"] != "admin" and current_user["rep_id"]:
+        rep_filter = " AND r.territory_id IN (SELECT territory_id FROM territories WHERE rep_id = ?)"
+        params.append(current_user["rep_id"])
+
     # --- RETAILER DATA ---
-    retailer_query = """
+    retailer_query = f"""
         SELECT 
             r.retailer_id, r.state, r.district, r.tehsil,
             i.sku_name, i.sku_qty, i.week_end_date
         FROM retailers r
         JOIN inventory i ON r.retailer_id = i.retailer_id
         WHERE i.week_end_date = (SELECT MAX(week_end_date) FROM inventory)
+        {rep_filter}
     """
     
-    r_params = []
+    r_params = list(params)
     if district and district != "All Locations":
         retailer_query += " AND r.district = ?"
         r_params.append(district)
@@ -230,6 +246,8 @@ def get_dashboard_data(district: str = None, tehsil: str = None):
     retailer_rows = cursor.fetchall()
 
     # --- GROWER DATA ---
+    # Simplification: Growers are not directly linked to reps in this schema, 
+    # but we could filter them by district if the rep has specific districts.
     grower_query = """
         SELECT 
             grower_id, state, district, tehsil, 
@@ -386,7 +404,7 @@ def get_dashboard_data(district: str = None, tehsil: str = None):
     return dashboard_alerts
 
 @app.post("/api/chat")
-async def chat_with_ai(request: Request):
+async def chat_with_ai(request: Request, current_user: dict = Depends(get_current_user)):
     """Conversational AI to explain predictions and recommendations"""
     body = await request.json()
     user_message = body.get("message")
