@@ -44,6 +44,10 @@ except FileNotFoundError:
 
 app = FastAPI(title="Syngenta Enterprise API")
 
+@app.get("/")
+def read_root():
+    return {"status": "online", "message": "Syngenta Co-Pilot API is live and healthy."}
+
 # Configure CORS
 frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173")
 origins = [frontend_url, "http://localhost:5173"]

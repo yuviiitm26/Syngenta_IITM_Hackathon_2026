@@ -26,6 +26,7 @@ dist/
 # OS
 .DS_Store
 __MACOSX/
-
 # Project Specific
-syngenta_enterprise_model.pkl
+# syngenta_enterprise_model.pkl (Removed from ignore so it can be deployed)
+EOF
+
