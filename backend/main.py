@@ -47,7 +47,7 @@ app = FastAPI(
     description="AI-Powered Agronomy and Sales Co-Pilot API for Syngenta Enterprise."
 )
 
-@app.get("/", methods=["GET", "HEAD"])
+@app.get("/")
 async def root():
     return {
         "message": "Welcome to Syngenta Co-Pilot API",
@@ -413,5 +413,3 @@ async def chat_with_ai(request: Request, current_user: dict = Depends(get_curren
     except Exception as e:
         logger.error(f"AI Chat Error: {str(e)}")
         return {"reply": "I'm sorry, I'm having trouble connecting to the brain right now."}
-
-
