@@ -162,7 +162,7 @@ export default function FieldCoPilot() {
         <div className="bg-white p-8 rounded-2xl shadow-xl border border-rose-100 text-center max-w-md">
           <WifiOff className="w-16 h-16 text-rose-500 mx-auto mb-4" />
           <h2 className="text-2xl font-bold text-slate-900 mb-2">Connection Failed</h2>
-          <p className="text-slate-600 mb-6">Unable to reach the backend server. Please ensure the FastAPI server is running on port 1000.</p>
+          <p className="text-slate-600 mb-6">Unable to reach the backend server. Please ensure the FastAPI server is running on port 10000.</p>
           <button 
             onClick={() => window.location.reload()}
             className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3 px-6 rounded-lg transition"
