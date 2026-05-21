@@ -1,39 +1,38 @@
-import sqlite3
+from config import logger
 import pandas as pd
+import sqlite3
 import os
 
-print("Initializing Production Data Warehouse...")
+logger.info("Initializing Production Data Warehouse...")
 
-# Connect to the database (this creates syngenta_prod.db)
-conn = sqlite3.connect("syngenta_prod.db")
-
-# Tell Python the name of the folder containing your CSVs
-data_folder = "data"
-
-# Define all your actual hackathon files pointing inside the 'data' folder
-files_to_load = {
-    "growers": os.path.join(data_folder, "growers.csv"),
-    "retailers": os.path.join(data_folder, "retailers.csv"),
-    "territories": os.path.join(data_folder, "reps_territory.csv"),
-    "inventory": os.path.join(data_folder, "retailer_inventory_weekly.csv"),
-    "visits": os.path.join(data_folder, "retailer_visit_log.csv"),
-    "digital_funnel": os.path.join(data_folder, "digital_funnel_weekly.csv"),
-    "whatsapp_campaign": os.path.join(data_folder, "whatsapp_campaign.csv")
-}
-
-# The ETL Loop: Read CSV -> Clean -> Push to SQL Table
-for table_name, file_path in files_to_load.items():
-    try:
-        print(f"Loading {file_path} into table '{table_name}'...")
-        # Pandas reads the file from the correct folder
+def load_csv_to_sqlite(file_path, table_name, conn):
+    if os.path.exists(file_path):
+        logger.info(f"Loading {file_path} into table '{table_name}'...")
         df = pd.read_csv(file_path)
-        
-        # Automatically creates the SQL table schema and inserts the data
-        df.to_sql(table_name, conn, if_exists="replace", index=False)
-        print(f"✓ Success: {len(df)} rows loaded.")
-        
-    except FileNotFoundError:
-        print(f"⚠️ Warning: '{file_path}' not found. Make sure the 'data' folder is in the same directory as this script.")
+        df.to_sql(table_name, conn, if_exists='replace', index=False)
+        logger.info(f"✓ Success: {len(df)} rows loaded.")
+    else:
+        logger.warning(f"⚠️ Warning: '{file_path}' not found. Make sure the 'data' folder is in the same directory as this script.")
 
-conn.close()
-print("\nData Warehouse build complete. All tables are live.")
+def main():
+    conn = sqlite3.connect('syngenta_prod.db')
+    
+    data_files = {
+        'backend/data/growers.csv': 'growers',
+        'backend/data/retailers.csv': 'retailers',
+        'backend/data/retailer_inventory_weekly.csv': 'inventory',
+        'backend/data/reps_territory.csv': 'territories',
+        'backend/data/retailer_pos.csv': 'pos_data',
+        'backend/data/retailer_visit_log.csv': 'visits',
+        'backend/data/digital_funnel_weekly.csv': 'digital_funnel',
+        'backend/data/whatsapp_campaign.csv': 'campaigns'
+    }
+
+    for file_path, table_name in data_files.items():
+        load_csv_to_sqlite(file_path, table_name, conn)
+
+    conn.close()
+    logger.info("Data Warehouse build complete. All tables are live.")
+
+if __name__ == "__main__":
+    main()

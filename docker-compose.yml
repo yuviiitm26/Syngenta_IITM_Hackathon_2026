@@ -1,0 +1,21 @@
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-syngenta-secret-2026}
+      - FRONTEND_URL=http://localhost:5173
+    volumes:
+      - ./backend/syngenta_prod.db:/app/syngenta_prod.db
+      - ./backend/syngenta_enterprise_model.pkl:/app/syngenta_enterprise_model.pkl
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "80:80"
+    environment:
+      - VITE_API_URL=http://localhost:8000
+    depends_on:
+      - backend

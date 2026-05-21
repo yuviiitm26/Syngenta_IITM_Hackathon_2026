@@ -1,10 +1,14 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback, Component } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { 
-  User, WifiOff, AlertTriangle, MapPin, 
+  WifiOff, AlertTriangle, MapPin, 
   Target, Bug, PackageMinus, Sparkles, Quote, 
-  CheckCircle, AlertCircle, LayoutDashboard, Settings, RefreshCcw,
+  CheckCircle, AlertCircle, LayoutDashboard, RefreshCcw,
   Send, Bot, MessageSquare, X, LogOut
-} from 'lucide-react';
+} from 'lucide-react'; 
+
+import { Toaster, toast } from 'sonner';
 import Login from './Login';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'https://syngenta-iitm-hackathon-2026-1.onrender.com';
@@ -15,7 +19,44 @@ const getUrgencyColors = (urgency) => {
   return { bg: 'bg-yellow-400', text: 'text-yellow-700', badge: 'bg-yellow-100 text-yellow-800' };
 };
 
-export default function FieldCoPilot() {
+class ErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error, errorInfo) {
+    console.error("ErrorBoundary caught an error", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="flex h-screen w-full items-center justify-center bg-slate-100">
+          <div className="bg-white p-8 rounded-2xl shadow-xl border border-rose-100 text-center max-w-md">
+            <AlertTriangle className="w-16 h-16 text-rose-500 mx-auto mb-4" />
+            <h2 className="text-2xl font-bold text-slate-900 mb-2">Something went wrong</h2>
+            <p className="text-slate-600 mb-6">The application encountered an unexpected error. Please refresh the page.</p>
+            <button 
+              onClick={() => window.location.reload()}
+              className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3 px-6 rounded-lg transition"
+            >
+              Refresh Application
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
+function FieldCoPilot() {
   const [token, setToken] = useState(localStorage.getItem('token'));
   const [user, setUser] = useState(JSON.parse(localStorage.getItem('user')));
   
@@ -41,17 +82,19 @@ export default function FieldCoPilot() {
     localStorage.setItem('user', JSON.stringify(newUser));
     setToken(newToken);
     setUser(newUser);
+    toast.success(`Welcome back, ${newUser.full_name}`);
   };
 
-  const handleLogout = () => {
+  const handleLogout = useCallback(() => {
     localStorage.removeItem('token');
     localStorage.removeItem('user');
     setToken(null);
     setUser(null);
-  };
+    toast.info("Logged out successfully");
+  }, []);
 
   // Helper for authorized fetches
-  const authFetch = (url, options = {}) => {
+  const authFetch = useCallback((url, options = {}) => {
     return fetch(url, {
       ...options,
       headers: {
@@ -59,7 +102,7 @@ export default function FieldCoPilot() {
         'Authorization': `Bearer ${token}`
       }
     });
-  };
+  }, [token]);
 
   // Auto-scroll chat
   useEffect(() => {
@@ -80,10 +123,11 @@ export default function FieldCoPilot() {
         }
       } catch (err) {
         console.error("Failed to fetch locations", err);
+        toast.error("Failed to load locations");
       }
     };
     fetchLocations();
-  }, [token]);
+  }, [token, authFetch, handleLogout]);
 
   // Fetch Available Tehsils when District changes
   useEffect(() => {
@@ -106,10 +150,11 @@ export default function FieldCoPilot() {
         }
       } catch (err) {
         console.error("Failed to fetch tehsils", err);
+        toast.error("Failed to load tehsils");
       }
     };
     fetchTehsils();
-  }, [selectedLocation, token]);
+  }, [selectedLocation, token, authFetch, handleLogout]);
 
   // Fetch Dashboard Data whenever selectedLocation or selectedTehsil changes
   useEffect(() => {
@@ -151,11 +196,41 @@ export default function FieldCoPilot() {
       } catch (err) {
         setError(err.message);
         setLoading(false);
+        toast.error("Failed to sync dashboard data");
       }
     };
 
     fetchData();
-  }, [selectedLocation, selectedTehsil, token]);
+  }, [selectedLocation, selectedTehsil, token, authFetch, handleLogout]);
+
+
+  const handleLogVisit = async () => {
+    if (!activeVisit || !token) return;
+
+    try {
+      const response = await authFetch(`${API_BASE_URL}/api/visits`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          visit_type: activeVisit.type,
+          visit_tehsil: activeVisit.tehsil,
+          product_recommended: activeVisit.recommended_product
+        })
+      });
+
+      if (response.ok) {
+        toast.success("Visit logged successfully!");
+        setVisitsData(prev => prev.filter(v => v.id !== activeVisit.id));
+        setActiveVisit(null);
+      } else {
+        const err = await response.json();
+        toast.error(`Failed to log visit: ${err.detail || 'Unknown error'}`);
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error("Error logging visit.");
+    }
+  };
 
   const handleSendMessage = async (e) => {
     e.preventDefault();
@@ -184,7 +259,9 @@ export default function FieldCoPilot() {
       const data = await response.json();
       setChatMessages(prev => [...prev, { role: 'assistant', text: data.reply }]);
     } catch (err) {
+      console.error("Chat error:", err);
       setChatMessages(prev => [...prev, { role: 'assistant', text: "Connection to AI Brain lost. Check backend." }]);
+      toast.error("AI connection lost");
     } finally {
       setChatLoading(false);
     }
@@ -233,7 +310,7 @@ export default function FieldCoPilot() {
 
   return (
     <div className="flex h-screen w-full bg-slate-100 font-sans text-slate-800 overflow-hidden">
-      
+      <Toaster position="top-right" richColors />
       {/* =========================================
           LEFT SIDEBAR: Navigation & List
       ========================================= */}
@@ -330,41 +407,48 @@ export default function FieldCoPilot() {
           </div>
           
           <div className="space-y-4 pb-6">
-            {visitsData.map((visit) => {
-              const colors = getUrgencyColors(visit.urgency);
-              const isActive = activeVisit?.id === visit.id;
-              
-              return (
-                <div 
-                  key={visit.id}
-                  onClick={() => setActiveVisit(visit)}
-                  className={`relative rounded-xl shadow-sm border transition-all cursor-pointer overflow-hidden
-                    ${isActive ? 'bg-emerald-50/50 border-emerald-500 ring-2 ring-emerald-500/20 translate-x-1' : 'bg-white border-slate-200 hover:border-emerald-300 hover:shadow-md'}`}
-                >
-                  <div className={`absolute top-0 left-0 bottom-0 w-1.5 ${colors.bg}`}></div>
-                  <div className="p-4 pl-6">
-                    <div className="flex justify-between items-start mb-2">
-                      <div>
-                        <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1 block">{visit.type}</span>
-                        <h3 className="font-bold text-slate-800 text-lg">{visit.name}</h3>
-                        <p className="text-xs text-slate-500 mt-1 flex items-center">
-                          <MapPin className="w-3 h-3 mr-1" /> {visit.location}
+            {visitsData.length > 0 ? (
+              visitsData.map((visit) => {
+                const colors = getUrgencyColors(visit.urgency);
+                const isActive = activeVisit?.id === visit.id;
+                
+                return (
+                  <div 
+                    key={visit.id}
+                    onClick={() => setActiveVisit(visit)}
+                    className={`relative rounded-xl shadow-sm border transition-all cursor-pointer overflow-hidden
+                      ${isActive ? 'bg-emerald-50/50 border-emerald-500 ring-2 ring-emerald-500/20 translate-x-1' : 'bg-white border-slate-200 hover:border-emerald-300 hover:shadow-md'}`}
+                  >
+                    <div className={`absolute top-0 left-0 bottom-0 w-1.5 ${colors.bg}`}></div>
+                    <div className="p-4 pl-6">
+                      <div className="flex justify-between items-start mb-2">
+                        <div>
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1 block">{visit.type}</span>
+                          <h3 className="font-bold text-slate-800 text-lg">{visit.name}</h3>
+                          <p className="text-xs text-slate-500 mt-1 flex items-center">
+                            <MapPin className="w-3 h-3 mr-1" /> {visit.location}
+                          </p>
+                        </div>
+                        <span className={`text-[10px] font-bold px-2.5 py-1 rounded-full ${colors.badge}`}>
+                          {visit.urgency.toUpperCase()}
+                        </span>
+                      </div>
+                      
+                      <div className="bg-white/50 rounded-lg p-3 mt-3 border border-slate-100">
+                        <p className={`text-xs font-semibold ${colors.text} mb-1 flex items-center`}>
+                          <AlertCircle className="w-3.5 h-3.5 mr-1" /> Threat: {visit.threat}
                         </p>
                       </div>
-                      <span className={`text-[10px] font-bold px-2.5 py-1 rounded-full ${colors.badge}`}>
-                        {visit.urgency.toUpperCase()}
-                      </span>
-                    </div>
-                    
-                    <div className="bg-white/50 rounded-lg p-3 mt-3 border border-slate-100">
-                      <p className={`text-xs font-semibold ${colors.text} mb-1 flex items-center`}>
-                        <AlertCircle className="w-3.5 h-3.5 mr-1" /> Threat: {visit.threat}
-                      </p>
                     </div>
                   </div>
-                </div>
-              );
-            })}
+                );
+              })
+            ) : (
+              <div className="text-center py-12 px-4 bg-white rounded-xl border border-dashed border-slate-300">
+                <MapPin className="w-10 h-10 text-slate-300 mx-auto mb-3" />
+                <p className="text-slate-500 font-medium">Please select a district to view visit schedule and predictive analysis.</p>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -396,7 +480,7 @@ export default function FieldCoPilot() {
                   <MessageSquare className="w-5 h-5" />
                   <span>Explain Metrics</span>
                 </button>
-                <button className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3 px-6 rounded-lg shadow transition flex items-center space-x-2">
+                <button onClick={handleLogVisit} className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3 px-6 rounded-lg shadow transition flex items-center space-x-2">
                   <CheckCircle className="w-5 h-5" />
                   <span>Log Visit</span>
                 </button>
@@ -429,7 +513,9 @@ export default function FieldCoPilot() {
                     <div className="p-1.5 bg-rose-100 rounded-lg shrink-0"><Bug className="w-5 h-5 text-rose-600" /></div>
                     <span className="font-bold text-slate-800 leading-tight">Biological Threat</span>
                   </div>
-                  <p className="text-sm text-slate-600 leading-relaxed">{activeVisit.details.threatData}</p>
+                  <div className="prose prose-sm prose-slate max-w-none text-slate-600">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{activeVisit.details.threatData}</ReactMarkdown>
+                  </div>
                 </div>
                 
                 <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
@@ -439,7 +525,9 @@ export default function FieldCoPilot() {
                       {activeVisit.type === 'Retailer' ? 'Inventory Status' : 'Grower Activity'}
                     </span>
                   </div>
-                  <p className="text-sm text-slate-600 leading-relaxed">{activeVisit.details.inventoryData}</p>
+                  <div className="prose prose-sm prose-slate max-w-none text-slate-600">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{activeVisit.details.inventoryData}</ReactMarkdown>
+                  </div>
                   <div className="mt-3 pt-3 border-t border-slate-100 flex items-center justify-between">
                     <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
                       {activeVisit.type === 'Retailer' ? 'Stock as of' : 'Last Scanned'}
@@ -461,13 +549,15 @@ export default function FieldCoPilot() {
                   <div className="absolute top-0 right-0 p-6 opacity-10">
                     <Quote className="w-24 h-24" />
                   </div>
-                  <p className="text-lg leading-relaxed text-slate-200 italic relative z-10 max-w-3xl">
-                    "{activeVisit.details.script}"
-                  </p>
+                  <div className="prose prose-invert max-w-none text-lg leading-relaxed text-slate-200 italic relative z-10">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      {activeVisit.details.script}
+                    </ReactMarkdown>
+                  </div>
                 </div>
               </div>
 
-              <button className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-4 px-6 rounded-xl shadow-lg transition flex items-center justify-center space-x-2 group">
+              <button onClick={handleLogVisit} className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-4 px-6 rounded-xl shadow-lg transition flex items-center justify-center space-x-2 group">
                 <CheckCircle className="w-6 h-6 group-hover:scale-110 transition-transform" />
                 <span className="text-lg">Complete and Log Visit</span>
               </button>
@@ -509,12 +599,14 @@ export default function FieldCoPilot() {
               )}
               {chatMessages.map((msg, i) => (
                 <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                  <div className={`max-w-[85%] rounded-2xl p-3 text-sm shadow-sm ${
+                  <div className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-sm shadow-sm ${
                     msg.role === 'user' 
                       ? 'bg-emerald-600 text-white rounded-br-none' 
                       : 'bg-white border border-slate-200 text-slate-700 rounded-bl-none'
                   }`}>
-                    <p className="whitespace-pre-wrap leading-relaxed">{msg.text}</p>
+                    <div className={`prose prose-sm max-w-none ${msg.role === 'user' ? 'prose-invert text-white' : 'prose-slate text-slate-700'}`}>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.text}</ReactMarkdown>
+                    </div>
                   </div>
                 </div>
               ))}
@@ -556,5 +648,13 @@ export default function FieldCoPilot() {
       </div>
 
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <ErrorBoundary>
+      <FieldCoPilot />
+    </ErrorBoundary>
   );
 }

@@ -22,6 +22,7 @@ A modern, high-fidelity React dashboard designed for Syngenta field representati
 
 ## 📂 Project Structure
 
+
 - `src/App.jsx`: The primary dashboard component and orchestration layer.
 - `src/App.css`: Custom modern styling and Tailwind extensions.
 - `public/`: Assets including SVG icons and brand assets.

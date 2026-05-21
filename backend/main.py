@@ -1,55 +1,51 @@
 from fastapi import FastAPI, Request, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 import sqlite3
 import requests
 import json
 import joblib
 import numpy as np
 import time
-from datetime import timedelta
-
+from datetime import timedelta, datetime
 import os
 import google.generativeai as genai
+
 from auth import (
     authenticate_user, 
     create_access_token, 
-    get_current_user, 
-    ACCESS_TOKEN_EXPIRE_MINUTES
+    get_current_user
 )
-from database import get_db_connection, init_db
+from database import get_db, init_db
+from config import settings, logger
 
-# --- 1. CONFIGURATION & ENV LOADING ---
-# If python-dotenv is not installed, we load the .env file manually
-env_path = os.path.join(os.path.dirname(__file__), ".env")
-if os.path.exists(env_path):
-    with open(env_path) as f:
-        for line in f:
-            if "=" in line and not line.startswith("#"):
-                key, value = line.strip().split("=", 1)
-                os.environ[key] = value.strip('"').strip("'")
-
-api_key = os.getenv("GEMINI_API_KEY")
-if not api_key or api_key == "GEMINI_API_KEY":
-    print("⚠️ Warning: GEMINI_API_KEY not found in environment or .env file.")
+# --- 1. CONFIGURATION ---
+if not settings.gemini_api_key or settings.gemini_api_key == "GEMINI_API_KEY":
+    logger.warning("GEMINI_API_KEY not found in environment.")
 else:
-    genai.configure(api_key=api_key)
-    print("✅ GenAI Configured Successfully!")
+    genai.configure(api_key=settings.gemini_api_key)
+    logger.info("GenAI Configured Successfully!")
 
 llm_model = genai.GenerativeModel('gemini-2.5-flash')
 
 # --- GLOBAL CACHE ---
-# This stores the weather so we don't ask the API twice for the same district
 weather_cache = {}
+
 # --- 1. LOAD THE ML FORECASTER ---
 try:
     forecaster = joblib.load("syngenta_enterprise_model.pkl")
-    print("✅ Predictive ML Model Loaded Successfully!")
+    logger.info("Predictive ML Model Loaded Successfully!")
 except FileNotFoundError:
     forecaster = None
-    print("⚠️ Warning: syngenta_forecaster.pkl not found. Running with dummy data.")
+    logger.warning("syngenta_enterprise_model.pkl not found. Running with dummy data.")
 
-app = FastAPI(title="Syngenta Enterprise API")
+app = FastAPI(
+    title=settings.app_name,
+    version=settings.version,
+    description="AI-Powered Agronomy and Sales Co-Pilot API for Syngenta Enterprise."
+)
 
 # Initialize Database on startup
 @app.on_event("startup")
@@ -57,32 +53,57 @@ async def startup_event():
     init_db()
 
 # Configure CORS
-frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173")
-origins = [frontend_url, "http://localhost:5173"]
+origins = [settings.frontend_url]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins if os.getenv("FRONTEND_URL") else ["*"], 
+    allow_origins=origins if not settings.debug else ["*"], 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# --- MODELS ---
+class VisitLog(BaseModel):
+    visit_type: str
+    visit_tehsil: str
+    product_recommended: str
+
+# --- EXCEPTION HANDLERS ---
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Unhandled Exception: {str(exc)}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "An internal server error occurred. Please contact support."},
+    )
+
+# --- HEALTH CHECK ---
+@app.get("/health")
+async def health_check():
+    return {
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "version": settings.version,
+        "ml_model_loaded": forecaster is not None
+    }
+
 # --- AUTH ENDPOINTS ---
 
 @app.post("/api/login")
-async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
-    user = authenticate_user(form_data.username, form_data.password)
+async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: sqlite3.Connection = Depends(get_db)):
+    user = authenticate_user(form_data.username, form_data.password, db)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token_expires = timedelta(minutes=settings.access_token_expire_minutes)
     access_token = create_access_token(
         data={"sub": user["username"]}, expires_delta=access_token_expires
     )
+    logger.info(f"User logged in: {user['username']}")
     return {"access_token": access_token, "token_type": "bearer", "user": {
         "username": user["username"],
         "full_name": user["full_name"],
@@ -109,21 +130,20 @@ def get_coordinates(district_name):
         "Varanasi": (25.3176, 82.9739),
         "Bharatpur": (27.2152, 77.4932)
     }
-    return coords.get(district_name, (18.5204, 73.8567)) # Default to Pune
+    # Default coordinates (Pune) if district not found
+    return coords.get(district_name, (18.5204, 73.8567)) 
 
 # --- THE ML INFERENCE ENGINE ---
 def analyze_future_threat(lat, lon, current_inventory):
     """Tries Live API -> Falls back to Mock Data -> Caches by Lat/Lon"""
-    
-    # Create a unique cache key based on the exact coordinates
     cache_key = f"{lat}_{lon}"
     
-    # 1. CHECK CACHE FIRST 
     if cache_key not in weather_cache:
-        print(f"☁️ Attempting live weather API for coordinates {lat}, {lon}...")
+        logger.info(f"Attempting live weather API for coordinates {lat}, {lon}...")
         url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&daily=temperature_2m_mean,precipitation_sum&hourly=relative_humidity_2m&timezone=auto"
         
         try:
+            # Simple rate limiting protection
             time.sleep(0.5) 
             response = requests.get(url, timeout=5)
             response.raise_for_status() 
@@ -134,42 +154,28 @@ def analyze_future_threat(lat, lon, current_inventory):
             pred_humidity = sum(data['hourly']['relative_humidity_2m']) / len(data['hourly']['relative_humidity_2m'])
             pred_ndvi = 0.58 if pred_rainfall < 5 else 0.75 
             
-            print(f"✅ API Success for {lat}, {lon}.")
-            # Save real data using the coordinate key
+            logger.info(f"API Success for {lat}, {lon}.")
             weather_cache[cache_key] = (pred_temp, pred_humidity, pred_rainfall, pred_ndvi)
             
         except (requests.exceptions.RequestException, KeyError) as e:
-            print(f"⚠️ API Limit Reached ({type(e).__name__}). Using Mock Data.")
-            
-            pred_temp = 28.5       
-            pred_humidity = 68.0   
-            pred_rainfall = 12.0   
-            pred_ndvi = 0.65       
-            
-            # Save mock data using the coordinate key
+            logger.warning(f"Weather API Error ({type(e).__name__}). Using Mock Data.")
+            pred_temp, pred_humidity, pred_rainfall, pred_ndvi = 28.5, 68.0, 12.0, 0.65
             weather_cache[cache_key] = (pred_temp, pred_humidity, pred_rainfall, pred_ndvi)
             
-    # 2. LOAD VARIABLES FROM CACHE
     pred_temp, pred_humidity, pred_rainfall, pred_ndvi = weather_cache[cache_key]
     
-    # 3. ASK THE ML MODEL
     if forecaster: 
         features = np.array([[pred_temp, pred_humidity, pred_rainfall, pred_ndvi, current_inventory]])
-        # Convert NumPy float to native Python float for FastAPI JSON serialization
         risk_score = float(forecaster.predict(features)[0]) 
     else:
         risk_score = 45.0 
 
-    # 4. FORMAT FOR REACT
     if risk_score > 75:
-        urgency = "critical"
-        threat_text = f"{risk_score:.0f}% Risk of Disease Outbreak Next Week"
+        urgency, threat_text = "critical", f"{risk_score:.0f}% Risk of Disease Outbreak Next Week"
     elif risk_score > 40:
-        urgency = "medium"
-        threat_text = f"{risk_score:.0f}% Risk of Pathogen Development"
+        urgency, threat_text = "medium", f"{risk_score:.0f}% Risk of Pathogen Development"
     else:
-        urgency = "low"
-        threat_text = f"Optimal conditions. Only {risk_score:.0f}% biological risk."
+        urgency, threat_text = "low", f"Optimal conditions. Only {risk_score:.0f}% biological risk."
 
     return {
         "urgency": urgency,
@@ -183,47 +189,40 @@ def analyze_future_threat(lat, lon, current_inventory):
 
 # --- PRODUCTION DATA FUSION ENDPOINT ---
 @app.get("/api/locations")
-def get_locations(current_user: dict = Depends(get_current_user)):
-    """Returns a unique list of districts from both retailers and growers for the frontend filter"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
+def get_locations(db: sqlite3.Connection = Depends(get_db), current_user: dict = Depends(get_current_user)):
+    cursor = db.cursor()
     cursor.execute("""
         SELECT DISTINCT district FROM retailers
         UNION
         SELECT DISTINCT district FROM growers
     """)
     districts = [row['district'] for row in cursor.fetchall() if row['district']]
-    conn.close()
     return sorted(districts)
 
 @app.get("/api/tehsils")
-def get_tehsils(district: str, current_user: dict = Depends(get_current_user)):
-    """Returns unique list of tehsils for a specific district from both retailers and growers"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
+def get_tehsils(district: str, db: sqlite3.Connection = Depends(get_db), current_user: dict = Depends(get_current_user)):
+    cursor = db.cursor()
     cursor.execute("""
         SELECT DISTINCT tehsil FROM retailers WHERE district = ?
         UNION
         SELECT DISTINCT tehsil FROM growers WHERE district = ?
     """, (district, district))
     tehsils = [row['tehsil'] for row in cursor.fetchall() if row['tehsil']]
-    conn.close()
     return sorted(tehsils)
 
 @app.get("/api/routes")
-def get_dashboard_data(district: str = None, tehsil: str = None, current_user: dict = Depends(get_current_user)):
-    """Queries data warehouse, groups data, and runs ML inference for retailers and growers"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
+def get_dashboard_data(district: str = None, tehsil: str = None, db: sqlite3.Connection = Depends(get_db), current_user: dict = Depends(get_current_user)):
+    if not district or district == "All Locations":
+        return []
+
+    cursor = db.cursor()
     
-    # Filter by rep_id if user is not admin
     rep_filter = ""
     params = []
     if current_user["role"] != "admin" and current_user["rep_id"]:
         rep_filter = " AND r.territory_id IN (SELECT territory_id FROM territories WHERE rep_id = ?)"
         params.append(current_user["rep_id"])
 
-    # --- RETAILER DATA ---
     retailer_query = f"""
         SELECT 
             r.retailer_id, r.state, r.district, r.tehsil,
@@ -245,9 +244,6 @@ def get_dashboard_data(district: str = None, tehsil: str = None, current_user: d
     cursor.execute(retailer_query, r_params)
     retailer_rows = cursor.fetchall()
 
-    # --- GROWER DATA ---
-    # Simplification: Growers are not directly linked to reps in this schema, 
-    # but we could filter them by district if the rep has specific districts.
     grower_query = """
         SELECT 
             grower_id, state, district, tehsil, 
@@ -266,8 +262,6 @@ def get_dashboard_data(district: str = None, tehsil: str = None, current_user: d
     
     cursor.execute(grower_query, g_params)
     grower_rows = cursor.fetchall()
-    
-    conn.close()
     
     dashboard_alerts = []
 
@@ -296,27 +290,6 @@ def get_dashboard_data(district: str = None, tehsil: str = None, current_user: d
         product_name = info["lowest_product"]
         all_inventory_string = " | ".join(info["products_list"])
         
-        if not district or district == "All Locations":
-            dashboard_alerts.append({
-                "id": f"RET_{r_id}",
-                "urgency": "low",
-                "type": "Retailer",
-                "name": f"Retailer {r_id}",
-                "location": f"{info['district']}, {info['state']}",
-                "threat": "Select location for analysis", 
-                "action": f"Restock {product_name}",
-                "riskValue": "Pending Analysis",
-                "details": {
-                    "threatData": "Analysis pending location selection",
-                    "inventoryData": f"Full Stock Snapshot: {all_inventory_string}",
-                    "inventoryDate": info["inventory_date"],
-                    "closeProb": "---",
-                    "script": "Please select a specific district to trigger the predictive threat analysis.",
-                    "metrics": {"predicted_risk": 0}
-                }
-            })
-            continue
-
         lat, lon = get_coordinates(info['district'])
         ml_analysis = analyze_future_threat(lat, lon, inventory_qty)
         
@@ -328,8 +301,10 @@ def get_dashboard_data(district: str = None, tehsil: str = None, current_user: d
             "type": "Retailer",
             "name": f"Retailer {r_id}",
             "location": f"{info['district']}, {info['state']}",
+            "tehsil": info['tehsil'],
             "threat": ml_analysis["threat"], 
             "action": f"Restock {product_name}",
+            "recommended_product": product_name,
             "riskValue": "High Priority",
             "details": {
                 "threatData": ml_analysis["threat"],
@@ -345,36 +320,12 @@ def get_dashboard_data(district: str = None, tehsil: str = None, current_user: d
     for row in grower_rows:
         g_id = row['grower_id']
         farm_size = row['grower_farm_size'] or 0
-        scanned = row['product_scan']
         last_product = row['product_name'] or "General Crop Care"
         last_activity = row['product_scan_datetime'] or "No recent scans"
         
-        if not district or district == "All Locations":
-            dashboard_alerts.append({
-                "id": f"GRW_{g_id}",
-                "urgency": "low",
-                "type": "Grower",
-                "name": f"Grower {g_id}",
-                "location": f"{row['district']}, {row['state']}",
-                "threat": "Select location for analysis", 
-                "action": f"Recommend {last_product}",
-                "riskValue": f"{farm_size} Acres",
-                "details": {
-                    "threatData": "Analysis pending location selection",
-                    "inventoryData": f"Farm Size: {farm_size} acres | Last Scanned: {last_product}",
-                    "activityDate": last_activity,
-                    "closeProb": "---",
-                    "script": "Please select a specific district to trigger the predictive threat analysis.",
-                    "metrics": {"predicted_risk": 0}
-                }
-            })
-            continue
-
         lat, lon = get_coordinates(row['district'])
-        # For growers, inventory level doesn't apply the same way, using a neutral 100 for threat analysis
         ml_analysis = analyze_future_threat(lat, lon, 100)
         
-        # High urgency if farm is large and threat is medium+ OR if they haven't scanned recently and threat is high
         final_urgency = ml_analysis["urgency"]
         if farm_size > 5 and ml_analysis["metrics"]["predicted_risk"] > 50:
             final_urgency = "critical"
@@ -385,8 +336,10 @@ def get_dashboard_data(district: str = None, tehsil: str = None, current_user: d
             "type": "Grower",
             "name": f"Grower {g_id}",
             "location": f"{row['district']}, {row['state']}",
+            "tehsil": row['tehsil'],
             "threat": ml_analysis["threat"], 
             "action": f"Pitch {last_product} Protection",
+            "recommended_product": last_product,
             "riskValue": f"{farm_size} Acres",
             "details": {
                 "threatData": ml_analysis["threat"],
@@ -398,37 +351,56 @@ def get_dashboard_data(district: str = None, tehsil: str = None, current_user: d
             }
         })
 
-    # Sort critical alerts to the top
     dashboard_alerts.sort(key=lambda x: 0 if x['urgency'] == 'critical' else (1 if x['urgency'] == 'high' else 2))
-    
     return dashboard_alerts
+
+@app.post("/api/visits")
+async def log_visit(visit: VisitLog, db: sqlite3.Connection = Depends(get_db), current_user: dict = Depends(get_current_user)):
+    cursor = db.cursor()
+    cursor.execute("SELECT territory_id FROM territories WHERE rep_id = ?", (current_user["rep_id"],))
+    row = cursor.fetchone()
+    territory_id = row['territory_id'] if row else "TER_UNKNOWN"
+    visit_date = datetime.now().strftime("%Y-%m-%d")
+    
+    try:
+        cursor.execute("""
+            INSERT INTO visits (rep_id, visit_date, territory_id, visit_tehsil, visit_type, product_recommended)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            current_user["rep_id"],
+            visit_date,
+            territory_id,
+            visit.visit_tehsil,
+            visit.visit_type.lower() + " meeting",
+            visit.product_recommended
+        ))
+        db.commit()
+        logger.info(f"Visit logged by {current_user['username']} for {visit.visit_tehsil}")
+        return {"message": "Visit logged successfully", "date": visit_date}
+    except Exception as e:
+        logger.error(f"Error logging visit: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to log visit record.")
 
 @app.post("/api/chat")
 async def chat_with_ai(request: Request, current_user: dict = Depends(get_current_user)):
-    """Conversational AI to explain predictions and recommendations"""
     body = await request.json()
-    user_message = body.get("message")
-    context = body.get("context") # Retailer or Grower specific data
+    user_message, context = body.get("message"), body.get("context")
     
     prompt = f"""
     You are the 'Syngenta Co-Pilot AI', an expert in agronomy, disease forecasting, and sales strategy.
-    
-    CUSTOMER CONTEXT:
-    {json.dumps(context, indent=2)}
-    
-    USER QUESTION:
-    {user_message}
+    CUSTOMER CONTEXT: {json.dumps(context, indent=2)}
+    USER QUESTION: {user_message}
     
     INSTRUCTIONS:
-    1. Explain the "Why" (the biological/weather factors) and the "How" (the ML prediction logic) behind the recommendations.
-    2. Use the provided metrics (temperature, rainfall, risk score) to justify your answer.
+    1. Explain the "Why" and "How" behind recommendations using biological/weather factors and ML logic.
+    2. Use provided metrics to justify.
     3. Keep it professional, data-driven, and actionable.
-    4. If the user asks about something not in the context, politely steer them back to the agronomic threat analysis.
-    5. Format your response with clear sections or bullet points for readability.
+    4. Format with clear sections/bullet points.
     """
     
     try:
         response = llm_model.generate_content(prompt)
         return {"reply": response.text.strip()}
     except Exception as e:
-        return {"reply": f"I'm sorry, I'm having trouble connecting to the brain: {str(e)}"}
+        logger.error(f"AI Chat Error: {str(e)}")
+        return {"reply": "I'm sorry, I'm having trouble connecting to the brain right now."}

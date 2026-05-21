@@ -1,0 +1,12 @@
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.venv
+venv
+.env
+.git
+.gitignore
+*.db
+syngenta_prod.db
+syngenta_enterprise_model.pkl

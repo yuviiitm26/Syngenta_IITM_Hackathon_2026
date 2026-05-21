@@ -30,6 +30,7 @@ export default function Login({ onLogin, API_BASE_URL }) {
         setError(data.detail || 'Invalid username or password');
       }
     } catch (err) {
+      console.error("Login error:", err);
       setError('Connection failed. Is the backend running?');
     } finally {
       setLoading(false);
