@@ -62,11 +62,12 @@ async def startup_event():
     init_db()
 
 # Configure CORS
-origins = [settings.frontend_url]
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins if not settings.debug else ["*"], 
+    allow_origins=[
+        "https://syngenta-iitm-hackathon-2026.vercel.app", 
+        "http://localhost:5173"                            
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
