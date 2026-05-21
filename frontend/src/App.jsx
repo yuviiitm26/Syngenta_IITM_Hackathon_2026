@@ -6,6 +6,8 @@ import {
   Send, Bot, MessageSquare, X
 } from 'lucide-react';
 
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+
 const getUrgencyColors = (urgency) => {
   if (urgency === 'critical') return { bg: 'bg-rose-500', text: 'text-rose-700', badge: 'bg-rose-100 text-rose-800' };
   if (urgency === 'high') return { bg: 'bg-orange-500', text: 'text-orange-700', badge: 'bg-orange-100 text-orange-800' };
@@ -39,7 +41,7 @@ export default function FieldCoPilot() {
   useEffect(() => {
     const fetchLocations = async () => {
       try {
-        const response = await fetch('http://localhost:8000/api/locations');
+        const response = await fetch(`${API_BASE_URL}/api/locations`);
         if (response.ok) {
           const data = await response.json();
           setAvailableLocations(['All Locations', ...data]);
@@ -61,7 +63,7 @@ export default function FieldCoPilot() {
       }
       
       try {
-        const response = await fetch(`http://localhost:8000/api/tehsils?district=${selectedLocation}`);
+        const response = await fetch(`${API_BASE_URL}/api/tehsils?district=${selectedLocation}`);
         if (response.ok) {
           const data = await response.json();
           setAvailableTehsils(['All Tehsils', ...data]);
@@ -79,7 +81,7 @@ export default function FieldCoPilot() {
     const fetchData = async () => {
       setLoading(true);
       try {
-        let url = 'http://localhost:8000/api/routes';
+        let url = `${API_BASE_URL}/api/routes`;
         const params = new URLSearchParams();
         
         if (selectedLocation !== 'All Locations') {
@@ -125,7 +127,7 @@ export default function FieldCoPilot() {
     setChatLoading(true);
 
     try {
-      const response = await fetch('http://localhost:8000/api/chat', {
+      const response = await fetch(`${API_BASE_URL}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

@@ -44,9 +44,13 @@ except FileNotFoundError:
 
 app = FastAPI(title="Syngenta Enterprise API")
 
+# Configure CORS
+frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173")
+origins = [frontend_url, "http://localhost:5173"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"], 
+    allow_origins=origins if os.getenv("FRONTEND_URL") else ["*"], 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
