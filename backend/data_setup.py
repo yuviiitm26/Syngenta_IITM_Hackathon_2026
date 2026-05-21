@@ -17,15 +17,18 @@ def load_csv_to_sqlite(file_path, table_name, conn):
 def main():
     conn = sqlite3.connect('syngenta_prod.db')
     
+    # Check if we are running from root or backend directory
+    prefix = 'backend/' if os.path.exists('backend/data') else ''
+    
     data_files = {
-        'backend/data/growers.csv': 'growers',
-        'backend/data/retailers.csv': 'retailers',
-        'backend/data/retailer_inventory_weekly.csv': 'inventory',
-        'backend/data/reps_territory.csv': 'territories',
-        'backend/data/retailer_pos.csv': 'pos_data',
-        'backend/data/retailer_visit_log.csv': 'visits',
-        'backend/data/digital_funnel_weekly.csv': 'digital_funnel',
-        'backend/data/whatsapp_campaign.csv': 'campaigns'
+        f'{prefix}data/growers.csv': 'growers',
+        f'{prefix}data/retailers.csv': 'retailers',
+        f'{prefix}data/retailer_inventory_weekly.csv': 'inventory',
+        f'{prefix}data/reps_territory.csv': 'territories',
+        f'{prefix}data/retailer_pos.csv': 'pos_data',
+        f'{prefix}data/retailer_visit_log.csv': 'visits',
+        f'{prefix}data/digital_funnel_weekly.csv': 'digital_funnel',
+        f'{prefix}data/whatsapp_campaign.csv': 'campaigns'
     }
 
     for file_path, table_name in data_files.items():

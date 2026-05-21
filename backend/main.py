@@ -47,7 +47,7 @@ app = FastAPI(
     description="AI-Powered Agronomy and Sales Co-Pilot API for Syngenta Enterprise."
 )
 
-@app.get("/")
+@app.get("/", methods=["GET", "HEAD"])
 async def root():
     return {
         "message": "Welcome to Syngenta Co-Pilot API",
