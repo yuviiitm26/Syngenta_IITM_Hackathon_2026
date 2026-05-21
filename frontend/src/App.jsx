@@ -6,7 +6,7 @@ import {
   Send, Bot, MessageSquare, X
 } from 'lucide-react';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:10000';
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'https://syngenta-iitm-hackathon-2026-1.onrender.com';
 
 const getUrgencyColors = (urgency) => {
   if (urgency === 'critical') return { bg: 'bg-rose-500', text: 'text-rose-700', badge: 'bg-rose-100 text-rose-800' };
