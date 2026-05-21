@@ -14,6 +14,10 @@ The project is divided into two main components:
 - **[Frontend (React)](./frontend/README.md)**: A modern, high-fidelity dashboard for route prioritization, profile deep-dives, and AI-assisted visit logging.
 
 ## ⚡️ Quick Start
+## In https://syngenta-iitm-hackathon-2026.vercel.app/
+## credentials
+## username -- admin
+## password -- syngenta2026
 
 ### 1. Backend Setup
 ```bash
